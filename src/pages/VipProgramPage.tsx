@@ -19,11 +19,12 @@ const rewardRules: Record<string, { cooldownMs?: number; monthly?: boolean; leve
   'monthly-bonus': { monthly: true },
 };
 
-type RewardCooldown = number | 'next-level';
+type RewardCooldown = number | { type: 'next-level'; levelDetailId: string };
 
 interface ResolvedVipState {
   user: VipUser;
   currentLevel: VipLevel;
+  currentLevelDetail: VipLevelDetail;
   vipLevelDetails: VipLevelDetail[];
   pointsUntilNextLevel: number;
 }
@@ -80,6 +81,7 @@ const resolveVipState = (data: VipData, bonusXp: number): ResolvedVipState => {
       progress,
     },
     currentLevel,
+    currentLevelDetail,
     vipLevelDetails,
     pointsUntilNextLevel,
   };
@@ -124,7 +126,7 @@ export const VipProgramPage = () => {
     return data.rewards.map((reward) => {
       const cooldown = rewardCooldowns[reward.id];
 
-      if (cooldown === 'next-level') {
+      if (typeof cooldown === 'object' && cooldown.type === 'next-level' && cooldown.levelDetailId === vipState?.currentLevelDetail.id) {
         return {
           ...reward,
           status: 'locked',
@@ -149,7 +151,7 @@ export const VipProgramPage = () => {
         countdown: 'Available',
       };
     });
-  }, [data, now, rewardCooldowns]);
+  }, [data, now, rewardCooldowns, vipState?.currentLevelDetail.id]);
 
   const claimableRewardCount = useMemo(
     () => rewards.filter((reward) => reward.status === 'available').length,
@@ -172,11 +174,19 @@ export const VipProgramPage = () => {
     }
 
     const rule = rewardRules[rewardId];
-    const nextCooldown: RewardCooldown = rule?.levelUp
-      ? 'next-level'
-      : rule?.monthly
-        ? getMonthlyCooldown()
-        : Date.now() + (rule?.cooldownMs ?? 0);
+    let nextCooldown: RewardCooldown;
+    if (rule?.levelUp) {
+      const currentLevelDetailId = vipState?.currentLevelDetail.id;
+      if (!currentLevelDetailId) {
+        return;
+      }
+
+      nextCooldown = { type: 'next-level', levelDetailId: currentLevelDetailId };
+    } else if (rule?.monthly) {
+      nextCooldown = getMonthlyCooldown();
+    } else {
+      nextCooldown = Date.now() + (rule?.cooldownMs ?? 0);
+    }
 
     setBonusXp((currentXp) => currentXp + reward.xpReward);
     setRewardCooldowns((currentCooldowns) => ({
