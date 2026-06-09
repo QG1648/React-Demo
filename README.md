@@ -1,5 +1,7 @@
 # VIP Program 页面实现
 
+![页面图](img/fig.png)
+
 ## 技术栈
 
 - React 18
