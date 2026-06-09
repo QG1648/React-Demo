@@ -7,7 +7,7 @@ import { VipHero } from '../components/VipHero/VipHero';
 import { VipLevelsCarousel } from '../components/VipLevelsCarousel/VipLevelsCarousel';
 import { VipLevelTable } from '../components/VipLevelTable/VipLevelTable';
 import { useVipData } from '../hooks/useVipData';
-import type { Reward } from '../types/vip';
+import type { Reward, VipData, VipLevel, VipLevelDetail, VipUser } from '../types/vip';
 
 const HOUR_MS = 60 * 60 * 1000;
 const WEEK_MS = 7 * 24 * HOUR_MS;
@@ -20,6 +20,13 @@ const rewardRules: Record<string, { cooldownMs?: number; monthly?: boolean; leve
 };
 
 type RewardCooldown = number | 'next-level';
+
+interface ResolvedVipState {
+  user: VipUser;
+  currentLevel: VipLevel;
+  vipLevelDetails: VipLevelDetail[];
+  pointsUntilNextLevel: number;
+}
 
 const getMonthlyCooldown = () => {
   const nextMonth = new Date();
@@ -41,6 +48,43 @@ const formatCountdown = (targetTime: number, now: number) => {
   return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
 };
 
+const resolveVipState = (data: VipData, bonusXp: number): ResolvedVipState => {
+  const currentXp = data.vipUser.currentXp + bonusXp;
+  const sortedLevelDetails = [...data.vipLevelDetails].sort((a, b) => a.xpRequired - b.xpRequired);
+  const currentLevelDetail =
+    [...sortedLevelDetails].reverse().find((detail) => currentXp >= detail.xpRequired) ?? data.vipUser.nextLevel;
+  const nextLevel = sortedLevelDetails.find((detail) => detail.xpRequired > currentXp) ?? currentLevelDetail;
+  const vipLevelDetails = data.vipLevelDetails.map((detail) => ({
+    ...detail,
+    completed: currentXp >= detail.xpRequired,
+  }));
+  const baseCurrentLevel =
+    data.vipLevels.find((level) => level.id === currentLevelDetail.levelId) ?? data.vipUser.currentLevel;
+  const currentLevel = {
+    ...baseCurrentLevel,
+    xpRequired: currentLevelDetail.xpRequired,
+    completed: true,
+  };
+  const pointsUntilNextLevel = Math.max(nextLevel.xpRequired - currentXp, 0);
+  const progress =
+    nextLevel.id === currentLevelDetail.id || nextLevel.xpRequired <= 0
+      ? 100
+      : Math.min(100, Math.max(0, Math.round((currentXp / nextLevel.xpRequired) * 100)));
+
+  return {
+    user: {
+      ...data.vipUser,
+      currentXp,
+      currentLevel,
+      nextLevel,
+      progress,
+    },
+    currentLevel,
+    vipLevelDetails,
+    pointsUntilNextLevel,
+  };
+};
+
 export const VipProgramPage = () => {
   const { data, loading, error, refetch } = useVipData();
   const [rewardCooldowns, setRewardCooldowns] = useState<Record<string, RewardCooldown>>({});
@@ -54,17 +98,23 @@ export const VipProgramPage = () => {
     return () => window.clearInterval(timer);
   }, []);
 
+  const vipState = useMemo(() => {
+    if (!data) {
+      return undefined;
+    }
+
+    return resolveVipState(data, bonusXp);
+  }, [bonusXp, data]);
+
   const selectedLevel = useMemo(() => {
     if (!data?.vipLevels.length) {
       return undefined;
     }
 
-    const currentLevel = data.vipLevels.find(
-      (level) => level.name.toLowerCase() === data.vipUser.currentLevel.level.toLowerCase(),
-    );
+    const currentLevel = vipState?.currentLevel;
 
     return data.vipLevels.find((level) => level.id === selectedLevelId) ?? currentLevel ?? data.vipLevels[0];
-  }, [data?.vipLevels, selectedLevelId]);
+  }, [data?.vipLevels, selectedLevelId, vipState?.currentLevel]);
 
   const rewards = useMemo<Reward[]>(() => {
     if (!data) {
@@ -111,29 +161,8 @@ export const VipProgramPage = () => {
       return [];
     }
 
-    return data.vipLevelDetails.filter((detail) => detail.levelId === selectedLevel.id);
-  }, [data, selectedLevel]);
-
-  const nextLevelDetail = useMemo(() => {
-    if (!data) return undefined;
-
-    return data.vipLevelDetails.find((detail) => detail.level.toLowerCase() === data.vipUser.nextLevel.level.toLowerCase());
-  }, [data]);
-
-  const pointsUntilNextLevel = useMemo(() => {
-    if (!data) return 0;
-
-    const targetXp = nextLevelDetail?.xpRequired ?? selectedLevel?.xpRequired ?? 0;
-    return Math.max(targetXp - (data.vipUser.currentXp + bonusXp), 0);
-  }, [bonusXp, data, nextLevelDetail, selectedLevel]);
-
-  const progressPercent = useMemo(() => {
-    if (!data) return 0;
-
-    const targetXp = nextLevelDetail?.xpRequired ?? selectedLevel?.xpRequired ?? 1;
-    // 已完成百分比，向上取整并限制 0-100
-    return Math.min(100, Math.max(0, Math.round(((data.vipUser.currentXp + bonusXp) / targetXp) * 100)));
-  }, [bonusXp, data, nextLevelDetail, selectedLevel]);
+    return (vipState?.vipLevelDetails ?? data.vipLevelDetails).filter((detail) => detail.levelId === selectedLevel.id);
+  }, [data, selectedLevel, vipState?.vipLevelDetails]);
 
   const handleClaim = (rewardId: string) => {
     const reward = rewards.find((item) => item.id === rewardId);
@@ -186,14 +215,14 @@ export const VipProgramPage = () => {
 
       <div className="relative mx-auto max-w-[980px] space-y-10 bg-[#15121d] px-6 py-8 shadow-[0_0_0_1px_rgba(255,255,255,0.02)] sm:px-10 sm:py-12">
         <VipHero
-          user={{ ...data.vipUser, currentXp: data.vipUser.currentXp + bonusXp, progress: progressPercent }}
-          pointsUntil={pointsUntilNextLevel}
+          user={vipState?.user ?? data.vipUser}
+          pointsUntil={vipState?.pointsUntilNextLevel ?? 0}
         />
         <RewardsSection rewards={rewards} claimableCount={claimableRewardCount} onClaim={handleClaim} />
         <VipLevelsCarousel
           levels={data.vipLevels}
           selectedLevelId={selectedLevel?.id ?? ''}
-          currentLevelId={data.vipUser.currentLevel.id}
+          currentLevelId={vipState?.currentLevel.id ?? data.vipUser.currentLevel.id}
           onSelectLevel={setSelectedLevelId}
         />
         <VipLevelTable details={levelDetails} />
